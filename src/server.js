@@ -40,56 +40,71 @@ zkClient.exists(
             } else {
                 console.log('Parent node already exists');
                 // Close the ZooKeeper connection when done
-               // zkClient.close();
+                // zkClient.close();
             }
         }
     }
 );
 
-// Periodically check and distribute ID ranges
-setInterval(() => {
-    zkClient.getChildren(
-        nodesPath,
-        (event) => {
-            console.log('Got event:', event);
-            // Handle event, e.g., a new node registered or existing node removed
-        },
-         (error, children) => {
+function updateChildrenData(client, nodePath, idRange) {
+    client.setData(
+        nodePath,
+        Buffer.from(`idRange: ${JSON.stringify(idRange)}`),
+        (error, stat) => {
             if (error) {
-                console.error('Failed to get children:', error);
+                console.error(`Failed to update znode for ${nodePath}:`, error);
             } else {
-               // console.log("children: ", children)
-                const childrenCount = children.length;
-                const res =  InfluencerService.geIdRangeOfInfluencers();
-                const { startId, endId} = res
-                // Calculate and assign ID ranges
-                children.forEach((node, index) => {
-                    const idRange = ZooKeeperUtils.calculateIdRangeForNode(index, childrenCount, startId, endId);
-                    console.log({idRange})
-                    const nodePath = `${nodesPath}/${node}`;
-                    
-                    // Update the znode with the assigned ID range
-                    zkClient.setData(
-                        nodePath,
-                        Buffer.from(`idRange: ${JSON.stringify(idRange)}`),
-                        (error, stat) => {
-                            if (error) {
-                                console.error(`Failed to update znode for ${node}:`, error);
-                            } else {
-                                console.log(`Assigned ID range for ${node}: ${JSON.stringify(idRange)}`);
-                            }
-                        }
-                    );
-                });
+                console.log(`Assigned ID range for ${nodePath}: ${JSON.stringify(idRange)}`);
             }
         }
     );
-}, 10000); // Check every 10 seconds, adjust as needed
+}
+
+function distributedIdsAmongChildren(children) {
+    const childrenCount = children.length;
+    const res = InfluencerService.geIdRangeOfInfluencers();
+    const { startId, endId } = res
+    // Calculate and assign ID ranges
+    children.forEach((node, index) => {
+        const idRange = ZooKeeperUtils.calculateIdRangeForNode(index, childrenCount, startId, endId);
+        console.log({ idRange })
+        const nodePath = `${nodesPath}/${node}`;
+        updateChildrenData(zkClient, nodePath, idRange);
+    });
+    console.log("distributing the ids after capturing the change")
+}
+
+function listChildren(client, path) {
+    client.getChildren(
+        path,
+        function (event) {
+            console.log('Got watcher event: %s', event);
+            listChildren(client, path);
+        },
+        function (error, children, stat) {
+            if (error) {
+                console.log(
+                    'Failed to list children of %s due to: %s.',
+                    path,
+                    error
+                );
+                return;
+            }
+
+            console.log('Children of %s are: %j.', path, children);
+            distributedIdsAmongChildren(children)
+
+        }
+    );
+}
+
+zkClient.once('connected', function () {
+    console.log('Connected to ZooKeeper.');
+    listChildren(zkClient, nodesPath);
+});
 
 
-// Close the ZooKeeper connection when done
 process.on('SIGINT', () => {
     zkClient.close();
     process.exit();
 });
-
